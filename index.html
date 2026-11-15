@@ -23,10 +23,38 @@ body{font-family:-apple-system,"Hiragino Sans","Yu Gothic UI","Meiryo",sans-seri
 </div>
 <script>
 'use strict';
-// レシートの中身はURLの「#」より後ろだけに入っている（サーバーには送られない・どこにも保存されない）
-function b64urlDecode(s){
+// ===== お店の情報（ここを書き換えてGitHubに上げなおす） =====
+const SHOP = {
+  name: 'お店の名前',
+  address: '',          // 載せないなら空のまま
+  tel: '',              // 載せないなら空のまま
+  thanks: 'ありがとうございました',
+};
+// ================================================================
+
+// レシートの中身はURLの「#」より後ろだけに入っている（GitHubには送られない・どこにも保存されない）
+const METHODS = ['現金', 'PayPay', '商品券'];
+function b64urlBytes(s){
   const bin = atob(s.replace(/-/g,'+').replace(/_/g,'/'));
-  return new TextDecoder().decode(Uint8Array.from(bin, c=>c.charCodeAt(0)));
+  return Uint8Array.from(bin, c=>c.charCodeAt(0));
+}
+async function decode(hash){
+  const kind = hash[0], bytes = b64urlBytes(hash.slice(1));
+  let text;
+  if(kind === 'z'){
+    if(typeof DecompressionStream === 'undefined') throw new Error('old');
+    const ds = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    text = await new Response(ds).text();
+  } else if(kind === 'p') text = new TextDecoder().decode(bytes);
+  else throw new Error('bad');
+  const a = JSON.parse(text);
+  if(!Array.isArray(a) || a[0] !== 2) throw new Error('bad');
+  const [, no, sec, items, subDisc, pays, change, giftOver] = a;
+  const i = items.map(([name, price, qty, disc]) => [name, price, qty, price*qty - disc, disc]);
+  const st = items.reduce((s, x) => s + x[1]*x[2], 0);
+  const T = i.reduce((s, x) => s + x[3], 0) - subDisc;
+  return { s:SHOP.name, a:SHOP.address, t:SHOP.tel, m:SHOP.thanks, n:no||null, d:sec, i, st, T,
+    p: pays.map(([mi, amt, tendered]) => [METHODS[mi] || '', amt, tendered]), c:change, g:giftOver };
 }
 const yen = n => (n<0?'-':'') + '¥' + Math.abs(n).toLocaleString('ja-JP');
 const out = document.getElementById('out');
@@ -52,12 +80,12 @@ function draw(r){
   r.i.forEach(([name, price, qty, amount, disc])=>{
     lr(name, yen(amount + disc), {size:15});
     text(`　${yen(price)} × ${qty}`, {size:12, color:'#666'});
-    if(disc) lr('　値引き', '-' + yen(disc).slice(1), {size:12, color:'#c0392b'});
+    if(disc) lr('　値引き', '-' + yen(disc), {size:12, color:'#c0392b'});
   });
   line();
   lr('小計', yen(r.st), {size:14});
   const totalDisc = r.st - r.T;
-  if(totalDisc) lr('値引き', '-' + yen(totalDisc).slice(1), {size:14, color:'#c0392b'});
+  if(totalDisc) lr('値引き', '-' + yen(totalDisc), {size:14, color:'#c0392b'});
   lr('合計', yen(r.T), {size:24, bold:true});
   gap(4);
   r.p.forEach(([m, amt, tendered])=>{
@@ -90,11 +118,16 @@ function draw(r){
   return c;
 }
 
-(function(){
+(async function(){
   const hash = location.hash.slice(1);
   let r;
-  try{ r = JSON.parse(b64urlDecode(hash)); if(!r || !Array.isArray(r.i)) throw 0; }
-  catch(e){ out.innerHTML = '<div class="err">レシートを読み込めませんでした。<br>お店の画面のQRコードをもう一度読み取ってください。</div>'; return; }
+  try{ r = await decode(hash); window.__receipt = r; }
+  catch(e){
+    out.innerHTML = e.message === 'old'
+      ? '<div class="err">お使いのブラウザではレシートを表示できません。<br>ブラウザ（またはiOS）を新しくしてから、もう一度開いてください。</div>'
+      : '<div class="err">レシートを読み込めませんでした。<br>お店の画面のQRコードをもう一度読み取ってください。</div>';
+    return;
+  }
   const canvas = draw(r);
   const url = canvas.toDataURL('image/png');
   const d = new Date(r.d*1000), p = n => String(n).padStart(2,'0');
